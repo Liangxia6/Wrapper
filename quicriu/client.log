@@ -1,0 +1,44 @@
+🚗 Connecting to 127.0.0.1:4242...
+✅ Connected! Sending data...
+📤 Sending: Ping-0
+📥 Echo: Ping-0
+📤 Sending: Ping-10
+📥 Echo: Ping-10
+📤 Sending: Ping-20
+📥 Echo: Ping-20
+📤 Sending: Ping-30
+📥 Echo: Ping-30
+📤 Sending: Ping-40
+📥 Echo: Ping-35Ping-36Ping-37Ping-38Ping-39Ping-40
+📤 Sending: Ping-50
+📥 Echo: Ping-50
+📤 Sending: Ping-60
+📥 Echo: Ping-60
+📤 Sending: Ping-70
+📥 Echo: Ping-70
+📤 Sending: Ping-80
+📥 Echo: Ping-80
+------------------------------------------------
+📩 [MIGRATION] 收到迁移指令!
+🔄 [RECONNECT] 准备断开旧连接，发起新连接...
+🚀 [RECONNECT] 开始连接新目标: 127.0.0.1:4242
+🚗 Connecting to 127.0.0.1:4242...
+✅ Reconnected in 2ms
+📤 Sending: Ping-90
+📥 Echo: Ping-90
+📤 Sending: Ping-100
+📥 Echo: Ping-100
+📤 Sending: Ping-110
+📥 Echo: Ping-110
+📤 Sending: Ping-120
+📥 Echo: Ping-120
+📤 Sending: Ping-130
+📥 Echo: Ping-130
+📤 Sending: Ping-140
+📥 Echo: Ping-140
+📤 Sending: Ping-150
+📥 Echo: Ping-150
+📤 Sending: Ping-160
+📥 Echo: Ping-160
+📤 Sending: Ping-170
+📥 Echo: Ping-170
