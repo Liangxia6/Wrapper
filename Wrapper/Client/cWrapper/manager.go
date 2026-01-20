@@ -11,10 +11,12 @@ import (
 )
 
 type Manager struct {
-	// Target 是我们 dial 的稳定远端地址。
+	// Target 是我们首次 dial 的地址（真实对端）。
 	//
-	// 在透明模式下，Target 通常指向 UDP proxy（例如 127.0.0.1:5342），
-	// proxy 再把 UDP 转发到当前后端服务（A 或 B）。
+	// 在“QUIC 透明迁移（内部 UDP 解耦）”模式下：
+	//   - QUIC 会绑定到一个稳定的 net.PacketConn（SwappableUDPConn）。
+	//   - 迁移时不重建 QUIC session，而是把 SwappableUDPConn 的 real peer 切到新地址。
+	//   - 因此 Target 仅用于初始连接，后续对端变化由 migrate 控制消息驱动。
 	Target   string
 	// Quiet 用于减少用户侧日志（TRACE 仍由环境变量 TRACE=1 控制）。
 	Quiet    bool
@@ -70,7 +72,7 @@ func (m *Manager) Run(ctx context.Context, run func(ctx context.Context, s *Sess
 			return ctx.Err()
 		}
 
-		sess, ctrl, err := dialControl(ctx, m.Target, m.ClientID, m.DialTimeout)
+		sess, ctrl, pc, err := dialControl(ctx, m.Target, m.ClientID, m.DialTimeout)
 		if err != nil {
 			if !m.Quiet {
 				fmt.Fprintf(os.Stderr, "[客户端] 连接失败：%v\n", err)
@@ -87,7 +89,7 @@ func (m *Manager) Run(ctx context.Context, run func(ctx context.Context, s *Sess
 		ctrlDone := make(chan struct{})
 		go func() {
 			defer close(ctrlDone)
-			m.controlLoop(ctrl, &migrateOnce, migrateSeen)
+			m.controlLoop(ctrl, pc, &migrateOnce, migrateSeen)
 		}()
 
 		_ = run(ctx, &Session{Conn: sess, Target: m.Target, MigrateSeen: migrateSeen})
@@ -97,7 +99,7 @@ func (m *Manager) Run(ctx context.Context, run func(ctx context.Context, s *Sess
 		<-ctrlDone
 		tracef("session ctrl loop done target=%s", m.Target)
 
-		// 透明模式下始终重试同一个 Target。
-		// 后端变化由 proxy 处理，不在这里做切换。
+		// 透明迁移模式下：这里不会切 target，也不会重建 QUIC。
+		// 若连接最终结束，则从初始 Target 重新 dial。
 	}
 }

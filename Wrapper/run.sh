@@ -61,6 +61,9 @@ if [[ "$USE_PROXY" == "1" ]]; then
   export TRANSPARENT=1
 else
   export TARGET_ADDR="127.0.0.1:${SRC_PORT}"
+  # 透明迁移（内部 UDP 解耦）同样需要 APP 在迁移期间保持 session，
+  # 避免因为短暂 read deadline 超时就主动结束连接。
+  export TRANSPARENT=1
 fi
 
 CLIENT_ARGS=(
@@ -71,7 +74,7 @@ CLIENT_ARGS=(
   -dial-timeout "$CLIENT_DIAL_TIMEOUT"
   -dial-backoff "$CLIENT_DIAL_BACKOFF"
 )
-if [[ "$USE_PROXY" == "1" ]]; then
+if [[ -n "${TRANSPARENT:-}" ]]; then
   CLIENT_ARGS+=( -stay-connected )
 fi
 if [[ "$CLIENT_QUIET" == "1" ]]; then
