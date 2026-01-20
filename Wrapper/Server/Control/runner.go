@@ -43,8 +43,6 @@ type controlConfig struct {
 	//   - 若非空，final dump 会通过 --prev-images-dir 走增量 dump。
 	predumpRounds  int
 	predumpLastDir string
-
-	backendFile string
 }
 
 func mountIfExists(args []string, hostPath, containerPath, mode string) []string {
@@ -102,13 +100,8 @@ func parseCommonFlags(cmd string, args []string) *controlConfig {
 	}
 	cfg.criuHost = criuHost
 	cfg.criuInB = filepath.Join("/hostbin", filepath.Base(criuHost))
-	cfg.backendFile = filepath.Join(cfg.imgDir, "backend.addr")
 
 	return cfg
-}
-
-func writeBackendFile(path, addr string) {
-	_ = os.WriteFile(path, []byte(addr+"\n"), 0o644)
 }
 
 func buildSkipMntArgs(imgDir string) []string {
@@ -341,7 +334,6 @@ func doMigrate(cfg *controlConfig, clientObs *clientObserver) {
 		if err := sudoKill(cfg.restoredPID, syscall.SIGUSR2); err != nil {
 			return err
 		}
-		writeBackendFile(cfg.backendFile, fmt.Sprintf("127.0.0.1:%d", cfg.dstPort))
 		return nil
 	})
 
@@ -440,7 +432,6 @@ func upCmd(args []string) {
 	prepareImgDir(cfg.imgDir)
 	startA(cfg)
 	startB(cfg)
-	writeBackendFile(cfg.backendFile, fmt.Sprintf("127.0.0.1:%d", cfg.srcPort))
 
 	fmt.Printf("[控制端] up 完成：A=%s(port=%d) B=%s(port=%d) imgDir=%s\n", cfg.aName, cfg.srcPort, cfg.bName, cfg.dstPort, cfg.imgDir)
 }

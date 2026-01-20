@@ -11,7 +11,6 @@ cd "$(dirname "$0")"
 : "${DST_PORT:=5243}"
 
 PIDFILE=client.pid
-PROXYPID=proxy.pid
 
 if ! sudo -n true 2>/dev/null; then
   echo "sudo 需要可用（建议先执行一次: sudo -v）" >&2
@@ -24,14 +23,6 @@ if [[ -f "$PIDFILE" ]]; then
     kill "$pid" 2>/dev/null || true
   fi
   rm -f "$PIDFILE"
-fi
-
-if [[ -f "$PROXYPID" ]]; then
-  pid=$(cat "$PROXYPID" || true)
-  if [[ -n "${pid:-}" ]]; then
-    kill "$pid" 2>/dev/null || true
-  fi
-  rm -f "$PROXYPID"
 fi
 
 # In practice, the pidfile can be stale/overwritten. Ensure we stop any

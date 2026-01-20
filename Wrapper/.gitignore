@@ -1,11 +1,13 @@
 # Build artifacts
 *_bin
 control
+proxy_bin
 
 # Runtime artifacts
 *.out
 *.pid
 *.log
+backend.addr
 
 # Optional: local scratch
 *.tmp

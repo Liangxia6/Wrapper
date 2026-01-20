@@ -1,10 +1,10 @@
 # Wrapper
 
-Wrapper 的目标是把“迁移编排（CRIU）”与“连接重建（QUIC 重连/切流）”做成一套可复用、可扩展的能力，用于在多台服务器之间迁移 Podman 容器内的应用实例。
+Wrapper 的目标是把“迁移编排（CRIU）”与“连接保持（QUIC 连接对迁移尽量透明）”做成一套可复用、可扩展的能力，用于在多台服务器之间迁移 Podman 容器内的应用实例。
 
 本项目聚焦的核心是：
 - server 侧：接收迁移指令并执行 dump/transfer/restore 的控制层能力。
-- client 侧：在网络变更/迁移切换时，稳定处理 QUIC 重连与业务恢复。
+- client 侧：在网络变更/迁移切换时，由 wrapper 在 UDP 层完成“对端切换”，尽量让 QUIC 不感知地址变化。
 
 ## 场景背景（简述）
 
@@ -33,7 +33,7 @@ Agent：执行节点上的特权动作（podman/nsenter/criu、端口分配、�
 Server 数据层（业务/容器侧）
 Runtime Wrapper（可选）：提供 freeze/resume/healthz 的本地契约，协助进入一致状态与恢复后初始化。
 Client 侧
-Client Wrapper（必需）：封装 QUIC dial、断线检测、重连策略、切流策略（新地址从哪里来）、以及“会话/业务状态续接”的钩子。
+Client Wrapper（必需）：向 quic-go 提供稳定的 `net.PacketConn` 视图，并在迁移时切换真实 UDP 对端（peer swap），避免重建 QUIC 会话；同时提供业务层的恢复钩子与观测（downtime）。
 
 ## 可靠运行（本机单次迁移链路）
 
@@ -46,6 +46,10 @@ Client Wrapper（必需）：封装 QUIC dial、断线检测、重连策略、�
 - `cd Wrapper`
 - `/usr/local/go/bin/go build -o control ./Server/Control`
 - `sudo ./control run --img-dir /dev/shm/criu-inject --criu-host-bin /usr/local/sbin/criu-4.1.1`
+
+或使用脚本（推荐）：
+- `./run.sh`（前台跑 client 并自动 up 容器）
+- 另一个终端 `./migration.sh`（触发迁移并等待客户端打印 downtime）
 
 预期输出：
 - Control 依次打印“构建/启动/检查点/恢复/等待重连”等步骤

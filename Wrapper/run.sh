@@ -22,10 +22,9 @@ cd "$(dirname "$0")"
 : "${CLIENT_DIAL_BACKOFF:=50ms}"
 : "${CLIENT_QUIET:=0}"
 
-# Transparent mode (UDP proxy in front of A/B): client always connects to proxy.
-: "${USE_PROXY:=0}"
-: "${PROXY_LISTEN_ADDR:=127.0.0.1:5342}"
-: "${BACKEND_FILE:=$IMG_DIR/backend.addr}"
+# 透明迁移：不再使用独立 Proxy。
+# 透明性由 cWrapper/sWrapper 在进程内完成：对 quic-go 提供稳定的 PacketConn 视图，
+# 迁移时仅在 wrapper 内部切换真实 UDP 对端（peer swap），避免重建 QUIC。
 
 GO_BIN="/usr/local/go/bin/go"
 if [[ ! -x "$GO_BIN" ]]; then
@@ -40,10 +39,6 @@ if [[ "$SKIP_CLIENT_BUILD" != "1" ]]; then
   "$GO_BIN" build -o ./Client/client_bin ./Client/APP
 fi
 
-if [[ "$USE_PROXY" == "1" ]]; then
-  "$GO_BIN" build -o ./proxy_bin ./Proxy
-fi
-
 if ! sudo -n true 2>/dev/null; then
   echo "sudo 需要可用（建议先执行一次: sudo -v）" >&2
   exit 2
@@ -55,16 +50,11 @@ if [[ -n "$CRIU_HOST_BIN" ]]; then
 fi
 sudo ./control "${UP_ARGS[@]}"
 
-if [[ "$USE_PROXY" == "1" ]]; then
-  echo "127.0.0.1:${SRC_PORT}" >"$BACKEND_FILE"
-  export TARGET_ADDR="$PROXY_LISTEN_ADDR"
-  export TRANSPARENT=1
-else
-  export TARGET_ADDR="127.0.0.1:${SRC_PORT}"
-  # 透明迁移（内部 UDP 解耦）同样需要 APP 在迁移期间保持 session，
-  # 避免因为短暂 read deadline 超时就主动结束连接。
-  export TRANSPARENT=1
-fi
+export TARGET_ADDR="127.0.0.1:${SRC_PORT}"
+
+# 透明迁移（内部 UDP 解耦）需要 APP 在迁移期间保持 session，
+# 避免因为短暂 read deadline 超时就主动结束连接。
+export TRANSPARENT=1
 
 CLIENT_ARGS=(
   -interval "$CLIENT_INTERVAL"
@@ -83,12 +73,6 @@ fi
 
 LOG=client.out
 PIDFILE=client.pid
-
-if [[ "$USE_PROXY" == "1" ]]; then
-  rm -f proxy.pid
-  BACKEND_FILE="$BACKEND_FILE" LISTEN_ADDR="$PROXY_LISTEN_ADDR" ./proxy_bin >proxy.log 2>&1 &
-  echo $! >proxy.pid
-fi
 
 if [[ "$MODE" == "foreground" ]]; then
   DOWN_ARGS=(down --img-dir "$IMG_DIR" --a-name "$A_NAME" --b-name "$B_NAME" --image "$IMAGE" --src-port "$SRC_PORT" --dst-port "$DST_PORT")
