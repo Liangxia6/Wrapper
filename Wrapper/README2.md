@@ -196,10 +196,10 @@
 	 - 等待 client 的 `ack`（带超时）。
 6) client 的 cWrapper 收到 `migrate`：
 	 - 触发 `MigrateSeen`（业务层可进入迁移态/收紧 timeout）；
-	 - 调用 `SwappableUDPConn.SetPeer(newPeer)`，把真实 UDP 对端切到 `127.0.0.1:DST_PORT`；
+	 - 调用 `SwappableUDPConn.ArmPeer(newPeer)`，把 `127.0.0.1:DST_PORT` 记录为候选对端（此时仍继续用旧对端与 A 通信）；
 	 - 发送 `ack`。
 
-此时（当前实现的语义）：客户端已经知道“接下来对端会变”，并且**立刻**把底层 UDP 真实对端切到新地址；QUIC 连接本身仍保持。
+此时（当前实现的语义）：客户端已经知道“接下来对端会变”，但仍用旧对端维持通信；当旧对端真的不可用（例如业务层出现 IO 超时）时，再 cutover 到候选对端。
 
 关于“何时切 peer”的讨论（你提出的优化点）：
 
@@ -213,7 +213,7 @@
 	- 继续用旧 peer 与 A 正常通信；当检测到旧 peer 真的不可用（例如连续 IO 超时/显式断链）时，才切换到候选 peer。
 	- 或者把控制流升级成两阶段：`prepare_migrate`（仅通知新地址）+ `commit_migrate`（真正切换时刻，由 Control 在 restore 完成后触发）。
 
-当前代码实现的是“现状（简单）”，尚未实现“候选 peer/两阶段 commit”的逻辑。
+当前代码实现了“候选 peer（armed peer）+ 业务 IO 失败触发 cutover”的逻辑；尚未实现“两阶段 commit 控制消息”。
 
 ### 4.3 CRIU 阶段（pre-dump/dump/restore）
 

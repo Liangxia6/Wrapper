@@ -95,19 +95,21 @@ func Serve(ctx context.Context, opts ServerOptions, handler func(stream io.ReadW
 	defer stopUSR2()
 
 	var (
-		mu      sync.Mutex
-		clients = map[quic.Connection]*ControlClient{}
+		mu  sync.Mutex
+		cur *ControlClient
 	)
 
-	register := func(conn quic.Connection, c *ControlClient) {
+	register := func(c *ControlClient) {
 		mu.Lock()
 		defer mu.Unlock()
-		clients[conn] = c
+		cur = c
 	}
-	unregister := func(conn quic.Connection) {
+	unregister := func(c *ControlClient) {
 		mu.Lock()
 		defer mu.Unlock()
-		delete(clients, conn)
+		if cur == c {
+			cur = nil
+		}
 	}
 
 	// SIGTERM: 触发 migrate 广播（供 Control 在容器外编排时使用）。
@@ -118,32 +120,25 @@ func Serve(ctx context.Context, opts ServerOptions, handler func(stream io.ReadW
 	go func() {
 		for range term {
 			id := fmt.Sprintf("m-%d", time.Now().UnixNano())
-			startAll := time.Now()
-
 			mu.Lock()
-			list := make([]*ControlClient, 0, len(clients))
-			for _, c := range clients {
-				list = append(list, c)
-			}
+			c := cur
 			mu.Unlock()
-
-			if !opts.Quiet {
-				fmt.Printf("[服务端] 触发迁移 id=%s clients=%d new=%s:%d\n", id, len(list), opts.MigrateAddr, opts.MigratePort)
-			}
-
-			for _, c := range list {
-				wait, ok := c.SendMigrateAndWait(id, opts.MigrateAddr, opts.MigratePort, opts.AckTimeout)
+			if c == nil {
 				if !opts.Quiet {
-					if ok {
-						fmt.Printf("[服务端] 收到ACK id=%s wait=%dms\n", id, wait.Milliseconds())
-					} else {
-						fmt.Printf("[服务端] ACK超时 id=%s wait=%dms\n", id, wait.Milliseconds())
-					}
+					fmt.Printf("[服务端] 触发迁移 id=%s (no active client)\n", id)
 				}
+				continue
 			}
-
 			if !opts.Quiet {
-				fmt.Printf("[服务端] 迁移广播完成 id=%s total=%dms\n", id, time.Since(startAll).Milliseconds())
+				fmt.Printf("[服务端] 触发迁移 id=%s new=%s:%d\n", id, opts.MigrateAddr, opts.MigratePort)
+			}
+			wait, ok := c.SendMigrateAndWait(id, opts.MigrateAddr, opts.MigratePort, opts.AckTimeout)
+			if !opts.Quiet {
+				if ok {
+					fmt.Printf("[服务端] 收到ACK id=%s wait=%dms\n", id, wait.Milliseconds())
+				} else {
+					fmt.Printf("[服务端] ACK超时 id=%s wait=%dms\n", id, wait.Milliseconds())
+				}
 			}
 		}
 	}()
@@ -168,8 +163,6 @@ func Serve(ctx context.Context, opts ServerOptions, handler func(stream io.ReadW
 		}
 
 		go func(conn quic.Connection) {
-			defer unregister(conn)
-
 			// 约定：client 第一条双向 stream 为控制流。
 			ctrl, err := conn.AcceptStream(context.Background())
 			if err != nil {
@@ -178,7 +171,8 @@ func Serve(ctx context.Context, opts ServerOptions, handler func(stream io.ReadW
 
 			cc := NewControlClient(ctrl)
 			cc.Start()
-			register(conn, cc)
+			register(cc)
+			defer unregister(cc)
 
 			// 后续 stream：业务数据流（由 APP 处理）。
 			for {

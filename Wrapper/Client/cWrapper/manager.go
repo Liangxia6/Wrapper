@@ -36,9 +36,23 @@ type Session struct {
 	// Target 是从 Manager.Target 复制来的便捷字段。
 	Target string
 
+	pc *SwappableUDPConn
+
 	// MigrateSeen：当控制流观测到 migrate 消息后会 close 一次。
 	// APP 可以用它在迁移期收紧 IO deadline，从而更快进入“故障判定/恢复”逻辑。
 	MigrateSeen <-chan struct{}
+}
+
+// CutoverToArmedPeer 尝试把底层 UDP 的真实对端切换到“候选对端”（如果存在）。
+//
+// 这是对“收到 migrate 但仍继续用旧对端”的支持：
+// - controlLoop 收到 migrate 时只 ArmPeer(new)。
+// - APP 在真正出现业务 IO 超时/不可达时调用本方法触发切换。
+func (s *Session) CutoverToArmedPeer() bool {
+	if s == nil || s.pc == nil {
+		return false
+	}
+	return s.pc.CutoverToArmedPeer()
 }
 
 // Run 是客户端 wrapper 的主循环。
@@ -52,7 +66,7 @@ type Session struct {
 // 透明迁移契约：
 //   - wrapper 在 migrate 发生时不切 target。
 //   - controlLoop 只负责触发 MigrateSeen + 发送 ACK。
-//   - A->B 的变化在 QUIC 之下完成（UDP proxy 切后端 + server UDP rebind）。
+//   - A->B 的变化在 QUIC 之下完成（client 侧 peer swap + server UDP rebind）。
 func (m *Manager) Run(ctx context.Context, run func(ctx context.Context, s *Session) error) error {
 	if m.Target == "" {
 		m.Target = "127.0.0.1:5242"
@@ -92,7 +106,7 @@ func (m *Manager) Run(ctx context.Context, run func(ctx context.Context, s *Sess
 			m.controlLoop(ctrl, pc, &migrateOnce, migrateSeen)
 		}()
 
-		_ = run(ctx, &Session{Conn: sess, Target: m.Target, MigrateSeen: migrateSeen})
+		_ = run(ctx, &Session{Conn: sess, Target: m.Target, pc: pc, MigrateSeen: migrateSeen})
 		tracef("session run ended target=%s", m.Target)
 		tracef("session closing target=%s", m.Target)
 		_ = sess.CloseWithError(0, "session end")

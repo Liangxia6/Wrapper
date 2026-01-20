@@ -74,6 +74,7 @@ func main() {
 		curIOTimeout := ioTimeout
 		curInterval := interval
 		migrated := false
+		cutoverDone := false
 		for {
 			if !migrated {
 				select {
@@ -117,6 +118,12 @@ func main() {
 				_ = ds.SetWriteDeadline(start.Add(curIOTimeout))
 			}
 			if _, err := w.WriteString(payload + "\n"); err != nil {
+				if migrated && !cutoverDone {
+					if s.CutoverToArmedPeer() {
+						cutoverDone = true
+						wrapper.Tracef("app cutover to armed peer")
+					}
+				}
 				if !lastEchoBeforeOutage.IsZero() && !awaitingFirstAfter {
 					awaitingFirstAfter = true
 					wrapper.Tracef("app write err; awaitingFirstAfter=true err=%v", err)
@@ -130,6 +137,12 @@ func main() {
 				continue
 			}
 			if err := w.Flush(); err != nil {
+				if migrated && !cutoverDone {
+					if s.CutoverToArmedPeer() {
+						cutoverDone = true
+						wrapper.Tracef("app cutover to armed peer")
+					}
+				}
 				if !lastEchoBeforeOutage.IsZero() && !awaitingFirstAfter {
 					awaitingFirstAfter = true
 					wrapper.Tracef("app flush err; awaitingFirstAfter=true err=%v", err)
@@ -148,6 +161,12 @@ func main() {
 			}
 			echoLine, err := r.ReadString('\n')
 			if err != nil {
+				if migrated && !cutoverDone {
+					if s.CutoverToArmedPeer() {
+						cutoverDone = true
+						wrapper.Tracef("app cutover to armed peer")
+					}
+				}
 				if !lastEchoBeforeOutage.IsZero() && !awaitingFirstAfter {
 					awaitingFirstAfter = true
 					wrapper.Tracef("app read err; awaitingFirstAfter=true err=%v", err)

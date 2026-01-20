@@ -13,7 +13,7 @@ import (
 // 契约：
 //   - 收到 migrate 消息后：(1) 只关闭一次 migrateSeen；(2) 发送 ACK。
 //   - 透明模式下，这里不做 target 切换/重连。
-//     我们只更新底层 UDP 的真实对端地址（SwappableUDPConn.SetPeer），让 QUIC 不感知变化。
+//     我们只“预置”新对端（SwappableUDPConn.ArmPeer），让业务在真正断联时再切换。
 //
 // 参数：
 //   - migrateOnce：保证即使多次收到 migrate，也只 close migrateSeen 一次。
@@ -35,8 +35,8 @@ func (m *Manager) controlLoop(ctrl quic.Stream, pc *SwappableUDPConn, migrateOnc
 		// 核心：不重建 QUIC，而是切换底层 UDP 的真实对端。
 		if pc != nil {
 			if na, rerr := net.ResolveUDPAddr("udp", newTarget); rerr == nil {
-				pc.SetPeer(na)
-				tracef("udp peer switched to=%s", na.String())
+				pc.ArmPeer(na)
+				tracef("udp peer armed to=%s", na.String())
 			} else {
 				tracef("udp peer switch failed target=%s err=%v", newTarget, rerr)
 			}

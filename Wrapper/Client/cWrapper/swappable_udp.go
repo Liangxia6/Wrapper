@@ -44,9 +44,10 @@ type SwappableUDPConn struct {
 	conn    *net.UDPConn
 	gen     uint64
 
-	peerMu  sync.RWMutex
-	realPeer *net.UDPAddr
-	fakePeer net.Addr
+	peerMu    sync.RWMutex
+	realPeer  *net.UDPAddr
+	armedPeer *net.UDPAddr
+	fakePeer  net.Addr
 }
 
 func NewSwappableUDPConn(network string, laddr *net.UDPAddr, realPeer *net.UDPAddr, fakePeer net.Addr) (*SwappableUDPConn, error) {
@@ -58,10 +59,39 @@ func NewSwappableUDPConn(network string, laddr *net.UDPAddr, realPeer *net.UDPAd
 }
 
 // SetPeer 切换真实对端地址（线程安全）。
+//
+// 注意：如果你希望“迁移消息先到，但继续使用旧对端直到真的断联”，
+// 请优先用 ArmPeer() + CutoverToArmedPeer()，而不是在收到 migrate 时立即 SetPeer。
 func (s *SwappableUDPConn) SetPeer(peer *net.UDPAddr) {
 	s.peerMu.Lock()
 	s.realPeer = peer
 	s.peerMu.Unlock()
+}
+
+// ArmPeer 设置“候选对端”。不会立刻影响 UDP 收发。
+//
+// 典型用法：控制流收到 migrate(new) 时 ArmPeer(new)。
+// 然后当旧对端真的不可用（例如业务 IO 超时）时，再 CutoverToArmedPeer()。
+func (s *SwappableUDPConn) ArmPeer(peer *net.UDPAddr) {
+	s.peerMu.Lock()
+	s.armedPeer = peer
+	s.peerMu.Unlock()
+}
+
+// CutoverToArmedPeer 将真实对端切换到 armedPeer（若存在）。
+// 返回值表示是否发生了切换。
+func (s *SwappableUDPConn) CutoverToArmedPeer() bool {
+	s.peerMu.Lock()
+	defer s.peerMu.Unlock()
+	if s.armedPeer == nil {
+		return false
+	}
+	// If already cutover to the same peer, treat as no-op.
+	if s.realPeer != nil && udpAddrEqual(s.realPeer, s.armedPeer) {
+		return false
+	}
+	s.realPeer = s.armedPeer
+	return true
 }
 
 func (s *SwappableUDPConn) getPeer() *net.UDPAddr {
