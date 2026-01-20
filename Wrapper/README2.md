@@ -17,11 +17,6 @@
 - 对客户端业务：可容忍短暂停顿，但要把中断控制在较小窗口，并能清晰观测/量化（last echo → first echo after）。
 - 对服务端恢复：CRIU restore 后必须解决“UDP socket 在新命名空间/端口映射下失效”的问题。
 
-### 非目标（当前 PoC/MVP 阶段）
-
-- 不做多节点传输（dump 镜像跨机器传输/registry/DNS/LB 更新）。当前以单机 A/B 容器模拟。
-- 不做多车多连接的复杂路由/隔离（当前更偏单车/少量连接 PoC）。
-- 不承诺完全等价于 QUIC 官方 Path Migration 语义；当前是“把地址变化隐藏在 QUIC 之下”的工程化策略。
 
 ---
 
@@ -241,6 +236,32 @@
 3) QUIC 层更可能保持现有状态（包括拥塞窗口/路径状态），恢复后可更快回到稳定发送。
 
 > 当前 PoC 的“收益形式”主要体现在：减少握手/重建成本与慢启动惩罚，让恢复更像“短暂停顿后继续”。
+
+### 5.3 QUIC/CID 视角：为什么“换 IP 仍像同一连接”（直觉版）
+
+你可以把 QUIC 的“连接身份”理解成：**Connection ID（CID）** + 会话密钥 + 状态机。
+
+- QUIC 包里有 CID（更准确地说是 QUIC 包头的 Destination Connection ID 等字段），用于让接收端在用户态快速把包分流到正确的连接。
+- CRIU 的作用：把 MEC-A 上 server 进程的**用户态内存**完整搬到 MEC-B（包含 QUIC 状态机、密钥、以及 CID 等）。
+- wrapper 的作用：
+	- 服务端：restore 后旧 UDP socket 可能不可用，sWrapper 用 MigratableUDP 在不“惊扰”quic-go 的前提下 rebind 到新 socket。
+	- 客户端：迁移后服务端的可达地址/端口变化，cWrapper 用 SwappableUDPConn 把真实对端悄悄切到新地址，但对 quic-go 伪装成“逻辑对端不变”。
+
+于是迁移后会发生一个看起来“很魔法”的现象：
+
+- 客户端收到一个来自新 IP/端口的 QUIC 包。
+- 客户端用包头里的 CID 做 demux，发现它对应的就是“旧连接”，所以把包交给同一个 QUIC session。
+- 对客户端来说：“他只是换了手机号（IP/端口），但 CID/密钥没变，所以还是同一个人”。
+
+对应到 wrapper 的操作序列（更工程化一点）：
+
+- 正常时：wrapper 把读写转交给当前 socket/对端。
+- 迁移时：
+	- server：MigratableUDP 关闭旧 socket 并 rebind 新 socket（接口对 quic-go 保持稳定）。
+	- client：SwappableUDPConn 把 real peer 从 A 切到 B（接口对 quic-go 保持稳定）。
+- QUIC 的反应：quic-go 继续调用同一个 `PacketConn.ReadFrom/WriteTo`，并认为调用成功；连接状态（含 CID）仍在，因此尽量不会走“重建连接”的路径。
+
+> 说明：标准 QUIC 还可能涉及路径验证/反放大等机制；本 PoC 的目标是验证“CID+内存态保留 + wrapper 提供稳定 socket 视图”在迁移场景下能实现尽量透明的恢复。
 
 ---
 
