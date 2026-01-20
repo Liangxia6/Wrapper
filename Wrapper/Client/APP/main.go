@@ -43,7 +43,7 @@ func main() {
 		stayConnected = true
 	}
 
-	m := &wrapper.Manager{Target: target, Quiet: quiet, ClientID: "car", DialTimeout: dialTimeout, DialBackoff: dialBackoff, Transparent: transparent != ""}
+	m := &wrapper.Manager{Target: target, Quiet: quiet, ClientID: "car", DialTimeout: dialTimeout, DialBackoff: dialBackoff}
 
 	var lastEchoBeforeOutage time.Time
 	var awaitingFirstAfter bool
@@ -73,17 +73,21 @@ func main() {
 		pingID := 0
 		curIOTimeout := ioTimeout
 		curInterval := interval
+		migrated := false
 		for {
-			select {
-			case <-s.MigrateSeen:
-				wrapper.Tracef("app migrateSeen")
-				if ioTimeoutAfterMigrate > 0 && ioTimeoutAfterMigrate < curIOTimeout {
-					curIOTimeout = ioTimeoutAfterMigrate
+			if !migrated {
+				select {
+				case <-s.MigrateSeen:
+					migrated = true
+					wrapper.Tracef("app migrateSeen")
+					if ioTimeoutAfterMigrate > 0 && ioTimeoutAfterMigrate < curIOTimeout {
+						curIOTimeout = ioTimeoutAfterMigrate
+					}
+					if intervalAfterMigrate > 0 && intervalAfterMigrate < curInterval {
+						curInterval = intervalAfterMigrate
+					}
+				default:
 				}
-				if intervalAfterMigrate > 0 && intervalAfterMigrate < curInterval {
-					curInterval = intervalAfterMigrate
-				}
-			default:
 			}
 
 			select {
