@@ -11,46 +11,46 @@ import (
 )
 
 type Manager struct {
-	// Target is the stable remote address we dial.
+	// Target 是我们 dial 的稳定远端地址。
 	//
-	// In transparent mode, Target typically points to the UDP proxy (e.g. 127.0.0.1:5342).
-	// The proxy then forwards UDP to the current backend server (A or B).
+	// 在透明模式下，Target 通常指向 UDP proxy（例如 127.0.0.1:5342），
+	// proxy 再把 UDP 转发到当前后端服务（A 或 B）。
 	Target   string
-	// Quiet reduces user-facing logs (TRACE remains controlled by TRACE=1).
+	// Quiet 用于减少用户侧日志（TRACE 仍由环境变量 TRACE=1 控制）。
 	Quiet    bool
-	// ClientID is sent in the initial "hello" control message.
-	// It can be used by the server/control layer for debugging or identification.
+	// ClientID 会在初始 "hello" 控制消息中发送。
+	// 主要用于服务端/控制端的调试和身份区分。
 	ClientID string
 
-	// DialBackoff is the retry delay between failed connection attempts.
+	// DialBackoff 是连接失败后的重试间隔。
 	DialBackoff time.Duration
-	// DialTimeout bounds a single dial attempt (including handshake).
+	// DialTimeout 限制一次 dial 尝试的最长时间（包含握手）。
 	DialTimeout time.Duration
 }
 
 type Session struct {
-	// Conn is the active quic-go connection (a QUIC session).
+	// Conn 是当前活跃的 quic-go 连接（一个 QUIC session）。
 	Conn   quic.Connection
-	// Target is copied from Manager.Target for convenience.
+	// Target 是从 Manager.Target 复制来的便捷字段。
 	Target string
 
-	// MigrateSeen will be closed once a migrate control message is observed on this session.
-	// APP may use it to tighten IO deadlines and detect cutover earlier.
+	// MigrateSeen：当控制流观测到 migrate 消息后会 close 一次。
+	// APP 可以用它在迁移期收紧 IO deadline，从而更快进入“故障判定/恢复”逻辑。
 	MigrateSeen <-chan struct{}
 }
 
-// Run is the main event loop of the client wrapper.
+// Run 是客户端 wrapper 的主循环。
 //
-// Structure:
-//   1) Dial QUIC to Manager.Target.
-//   2) Open a control stream and start controlLoop in a goroutine.
-//   3) Invoke the application callback, which owns business streams and IO.
-//   4) When the callback returns, close the session and (unless ctx canceled) retry.
+// 结构：
+//   1) dial 到 Manager.Target 建立 QUIC 连接。
+//   2) 打开控制流 stream，并在 goroutine 中运行 controlLoop。
+//   3) 调用 APP 回调；业务 stream 与 IO 由 APP 自己管理。
+//   4) 回调返回后关闭 session；若 ctx 未取消则重试。
 //
-// Transparent migration contract:
-//   - The wrapper DOES NOT switch targets on migrate.
-//   - controlLoop only signals MigrateSeen and sends ACK.
-//   - Any A->B change is handled under the QUIC layer (UDP proxy + server UDP rebind).
+// 透明迁移契约：
+//   - wrapper 在 migrate 发生时不切 target。
+//   - controlLoop 只负责触发 MigrateSeen + 发送 ACK。
+//   - A->B 的变化在 QUIC 之下完成（UDP proxy 切后端 + server UDP rebind）。
 func (m *Manager) Run(ctx context.Context, run func(ctx context.Context, s *Session) error) error {
 	if m.Target == "" {
 		m.Target = "127.0.0.1:5242"
@@ -97,7 +97,7 @@ func (m *Manager) Run(ctx context.Context, run func(ctx context.Context, s *Sess
 		<-ctrlDone
 		tracef("session ctrl loop done target=%s", m.Target)
 
-		// In transparent mode we always retry the same Target.
-		// Backend changes are handled by the proxy, not by this loop.
+		// 透明模式下始终重试同一个 Target。
+		// 后端变化由 proxy 处理，不在这里做切换。
 	}
 }

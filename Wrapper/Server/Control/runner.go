@@ -33,14 +33,14 @@ type controlConfig struct {
 
 	// Incremental pre-copy (CRIU pre-dump) settings.
 	//
-	// predumpRounds:
-	//   - How many CRIU pre-dump iterations to run before the final dump.
-	//   - Each iteration copies dirty memory pages while the process keeps running
-	//     (--leave-running). This reduces the final dump size/time for large-memory services.
+	// predumpRounds：
+	//   - final dump 之前执行多少轮 CRIU pre-dump。
+	//   - 每一轮都会在进程继续运行（--leave-running）的情况下复制脏页，
+	//     这能显著降低大内存服务的 final dump 体积/耗时。
 	//
-	// predumpLastDir:
-	//   - Directory name (under imgDir) of the last successful pre-dump.
-	//   - If set, final dump uses --prev-images-dir to make the dump incremental.
+	// predumpLastDir：
+	//   - 最后一轮成功 pre-dump 的目录名（位于 imgDir 下）。
+	//   - 若非空，final dump 会通过 --prev-images-dir 走增量 dump。
 	predumpRounds  int
 	predumpLastDir string
 
@@ -230,11 +230,11 @@ func doMigrate(cfg *controlConfig, clientObs *clientObserver) {
 				return err
 			}
 
-			// CRIU pre-dump flags used here:
-			//   - --leave-running: do not stop the process; this is the "pre-copy" phase.
-			//   - --track-mem: enable incremental tracking of dirtied pages.
-			//   - --prev-images-dir (from 2nd round): link to previous images to make it incremental.
-			//   - --empty-ns net + --manage-cgroups=ignore: pragmatic settings for containerized PoC.
+			// 这里使用的 CRIU pre-dump 关键参数：
+			//   - --leave-running：不停止进程（即“预拷贝”阶段）。
+			//   - --track-mem：启用脏页跟踪，为增量/多轮 pre-dump 做基础。
+			//   - --prev-images-dir（从第 2 轮开始）：引用上一轮镜像目录，形成增量链。
+			//   - --empty-ns net + --manage-cgroups=ignore：容器 PoC 的务实配置。
 			args := []string{cfg.criuHost, "pre-dump", "-t", strconv.Itoa(cfg.aInitPID), "-D", imgSubdir, "-W", cfg.imgDir,
 				"--shell-job", "--leave-running", "--empty-ns", "net", "--manage-cgroups=ignore", "--track-mem",
 			}

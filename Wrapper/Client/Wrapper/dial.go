@@ -14,24 +14,23 @@ func dialControl(ctx context.Context, target string, clientID string, dialTimeou
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
 
-	// quic.Config controls transport-level behavior.
+	// quic.Config 用于控制 QUIC 传输层行为。
 	//
-	// KeepAlivePeriod:
-	//   - Sends periodic keep-alives to reduce idle timeouts through NAT/firewalls.
+	// KeepAlivePeriod：
+	//   - 定期发送 keep-alive，减少 NAT/防火墙导致的空闲超时。
 	//
-	// HandshakeIdleTimeout:
-	//   - Upper bound for the handshake phase; we tie it to DialTimeout here.
+	// HandshakeIdleTimeout：
+	//   - 握手阶段的超时上限；这里直接绑定到 DialTimeout。
 	qc := &quic.Config{KeepAlivePeriod: 2 * time.Second, HandshakeIdleTimeout: dialTimeout}
 
-	// Try 0-RTT first (quic.DialAddrEarly).
+	// 优先尝试 0-RTT（quic.DialAddrEarly）。
 	//
-	// quic-go semantics:
-	//   - DialAddrEarly returns an EarlyConnection that allows sending application data
-	//     before the handshake fully completes *if* the server accepts 0-RTT.
-	//   - Whether 0-RTT was actually used is visible via ConnectionState().Used0RTT.
+	// quic-go 的语义（只描述接口层面）：
+	//   - DialAddrEarly 返回 EarlyConnection，如果服务端接受 0-RTT，则可以在握手完全完成前发送应用数据。
+	//   - 是否真正使用了 0-RTT，可以通过 ConnectionState().Used0RTT 判断。
 	//
-	// This optimization mostly matters for reconnect-based flows. In transparent mode,
-	// we still keep it because it is safe and helps if the session gets rebuilt.
+	// 这个优化在“重连式迁移”里收益更大；透明模式下我们也保留它，
+	// 因为它是安全的，并且当 session 真的需要重建时仍能降低延迟。
 	start := time.Now()
 	sessEarly, errEarly := quic.DialAddrEarly(dialCtx, target, ClientTLSConfig(), qc)
 	var sess quic.Connection
@@ -51,7 +50,7 @@ func dialControl(ctx context.Context, target string, clientID string, dialTimeou
 		return nil, nil, err
 	}
 
-	// First message on the control stream is a "hello" identifying the client.
+	// 控制流第一条消息："hello"，用于标识 client。
 	_ = WriteLine(ctrl, Message{Type: TypeHello, ClientID: clientID})
 	st := sess.ConnectionState()
 	tracef("dial ok target=%s early=%v used0rtt=%v dt=%dms", target, usedEarly, st.Used0RTT, time.Since(start).Milliseconds())

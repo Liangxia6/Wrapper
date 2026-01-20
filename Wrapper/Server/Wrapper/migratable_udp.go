@@ -8,19 +8,19 @@ import (
 	"time"
 )
 
-// MigratableUDP is a UDP socket wrapper that supports "rebind" after CRIU restore.
+// MigratableUDP 是一个支持“restore 后 rebind”的 UDP socket 包装。
 //
-// Why is this needed?
-//   - After CRIU restore into container B, the restored process needs a fresh UDP socket
-//     that matches the new network namespace / port mapping.
-//   - At the same time, quic-go is concurrently calling ReadFrom/WriteTo.
-//   - Closing the socket under a blocked ReadFrom would surface "use of closed network connection".
+// 为什么需要它？
+//   - CRIU restore 到容器 B 后，被恢复的进程需要创建一个新的 UDP socket，
+//     以匹配新的网络命名空间/端口映射。
+//   - 同时 quic-go 会并发调用 ReadFrom/WriteTo。
+//   - 如果在 ReadFrom 阻塞期间直接 Close 旧 socket，会出现 "use of closed network connection"。
 //
-// Strategy:
-//   1) Create a new UDPConn first.
-//   2) Atomically swap m.conn (and bump generation).
-//   3) Close the old conn.
-//   4) If ReadFrom/WriteTo sees a close error AND generation changed, retry.
+// 策略：
+//   1) 先创建新 UDPConn。
+//   2) 原子地 swap m.conn（并增加 generation）。
+//   3) 再关闭旧 conn。
+//   4) ReadFrom/WriteTo 观察到 close 错误且 generation 已变化时，自动重试。
 
 type MigratableUDP struct {
 	mu sync.Mutex

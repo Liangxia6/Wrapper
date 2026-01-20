@@ -27,14 +27,14 @@ type Message struct {
 	AckID string `json:"ack_id,omitempty"`
 }
 
-// Control protocol: newline-delimited JSON.
+// 控制流协议：以换行分隔的 JSON（newline-delimited JSON）。
 //
-// Why "JSON + \n" in a QUIC stream?
-//   - It's simple for a PoC and debuggable via logs.
-//   - bufio.Scanner can split by lines, which keeps parsing straightforward.
-//   - QUIC provides reliability and ordering within a stream.
+// 为什么在 QUIC stream 里用 "JSON + \n"？
+//   - PoC 阶段实现简单，日志可读性好。
+//   - bufio.Scanner 可按行切分，解析逻辑直观。
+//   - QUIC stream 自带可靠有序传输。
 //
-// Note: Scanner has a token size limit, so NewLineReader increases the buffer.
+// 注意：Scanner 有 token 长度限制，因此 NewLineReader 会调大 buffer。
 
 func WriteLine(w io.Writer, msg Message) error {
 	b, err := json.Marshal(msg)
@@ -50,8 +50,8 @@ type LineReader struct{ s *bufio.Scanner }
 func NewLineReader(r io.Reader) *LineReader {
 	s := bufio.NewScanner(r)
 	buf := make([]byte, 0, 64*1024)
-	// Allow up to 1 MiB per control line to avoid Scanner rejecting larger messages.
-	// Our control messages are tiny, but this prevents accidental failures.
+	// 允许单行最大 1MiB，避免 Scanner 因 token 过大而拒绝。
+	// 控制消息本身很小，但这样更稳健。
 	s.Buffer(buf, 1024*1024)
 	return &LineReader{s: s}
 }

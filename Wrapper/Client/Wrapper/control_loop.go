@@ -7,17 +7,16 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-// controlLoop runs on the dedicated control stream.
+// controlLoop 在专用控制流 stream 上运行。
 //
-// Contract:
-//   - When we receive a migrate message, we (1) close migrateSeen exactly once and
-//     (2) send an ACK.
-//   - In transparent mode we do NOT change targets / reconnect here.
-//     The underlying network change is handled by the UDP proxy + server UDP rebind.
+// 契约：
+//   - 收到 migrate 消息后：(1) 只关闭一次 migrateSeen；(2) 发送 ACK。
+//   - 透明模式下，这里不做 target 切换/重连。
+//     底层网络变化由 UDP proxy 切后端 + server UDP rebind 完成。
 //
-// Parameters:
-//   - migrateOnce ensures migrateSeen closes once even if multiple migrate messages arrive.
-//   - migrateSeen is a channel used as a one-shot signal to the application.
+// 参数：
+//   - migrateOnce：保证即使多次收到 migrate，也只 close migrateSeen 一次。
+//   - migrateSeen：作为“一次性信号”通知 APP 进入迁移态。
 func (m *Manager) controlLoop(ctrl quic.Stream, migrateOnce *sync.Once, migrateSeen chan<- struct{}) {
 	lr := NewLineReader(ctrl)
 	for {
@@ -36,9 +35,8 @@ func (m *Manager) controlLoop(ctrl quic.Stream, migrateOnce *sync.Once, migrateS
 				close(migrateSeen)
 			})
 		}
-		// ACK is sent immediately so the server/control layer can proceed with CRIU dump/restore.
-		// It does not imply that the client has "recovered"; it only means the client observed
-		// the migrate event on the control stream.
+		// 立即发送 ACK，便于 server/control 继续推进 CRIU dump/restore。
+		// 注意：ACK 不代表“客户端业务已恢复”，只代表客户端在控制流上观测到了 migrate 事件。
 		_ = WriteLine(ctrl, Message{Type: TypeAck, AckID: msg.ID})
 	}
 }
