@@ -1,3 +1,17 @@
+// Command proxy is a tiny UDP forwarder used to make migration QUIC-transparent.
+//
+// The client always dials QUIC to LISTEN_ADDR (this proxy).
+// The control process writes the current backend address ("ip:port") into BACKEND_FILE.
+// The proxy polls the file and switches its forwarding destination.
+//
+// As a result, during A -> B migration:
+//   - Client target stays stable (no QUIC reconnect / no target switch).
+//   - Backend changes are hidden below QUIC (pure UDP forwarding).
+//
+// This is a PoC implementation:
+//   - Single-client mapping (last seen client address).
+//   - No authentication.
+//   - No loss recovery beyond what QUIC already provides.
 package main
 
 import (
@@ -12,7 +26,10 @@ import (
 )
 
 type backendAddr struct {
+	// addr is the currently selected backend UDP address (e.g. 127.0.0.1:5242).
+	// It is read frequently by the forwarding hot path.
 	addr *net.UDPAddr
+	// err is kept for debugging / future metrics; current code only checks addr != nil.
 	err  error
 }
 
@@ -30,6 +47,12 @@ func main() {
 	fatalIf(err, "listen backend")
 	defer bc.Close()
 
+	// We use two UDP sockets:
+	//   - lc: client-facing socket (fixed LISTEN_ADDR)
+	//   - bc: backend-facing socket (stable local port to backend)
+	//
+	// Keeping a stable local port towards the backend avoids additional NAT churn and
+	// simplifies debugging.
 	fmt.Printf("[proxy] listen=%s backendSock=%s backendFile=%s\n", lc.LocalAddr().String(), bc.LocalAddr().String(), backendFile)
 
 	var cur atomic.Value
@@ -44,6 +67,11 @@ func main() {
 	}()
 
 	// Single-client mapping (good enough for this PoC).
+	//
+	// Limitation:
+	//   - We remember the last seen client address and send backend replies to it.
+	//   - This is sufficient for the current MEC vehicle demo (one client).
+	//   - For multi-client support we'd need a map keyed by 4-tuple / connection ID.
 	var clientMu sync.Mutex
 	var lastClient *net.UDPAddr
 
@@ -92,6 +120,12 @@ func main() {
 }
 
 func watchBackendFile(path string, poll time.Duration, cur *atomic.Value, stop <-chan struct{}) {
+	// This goroutine polls a simple text file containing "ip:port" and swaps the
+	// current backend when it changes.
+	//
+	// Why a file?
+	//   - It is easy to update from the Control process.
+	//   - It avoids introducing another control channel for this PoC.
 	var last string
 	for {
 		select {

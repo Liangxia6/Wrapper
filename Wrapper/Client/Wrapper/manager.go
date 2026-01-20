@@ -11,16 +11,27 @@ import (
 )
 
 type Manager struct {
+	// Target is the stable remote address we dial.
+	//
+	// In transparent mode, Target typically points to the UDP proxy (e.g. 127.0.0.1:5342).
+	// The proxy then forwards UDP to the current backend server (A or B).
 	Target   string
+	// Quiet reduces user-facing logs (TRACE remains controlled by TRACE=1).
 	Quiet    bool
+	// ClientID is sent in the initial "hello" control message.
+	// It can be used by the server/control layer for debugging or identification.
 	ClientID string
 
+	// DialBackoff is the retry delay between failed connection attempts.
 	DialBackoff time.Duration
+	// DialTimeout bounds a single dial attempt (including handshake).
 	DialTimeout time.Duration
 }
 
 type Session struct {
+	// Conn is the active quic-go connection (a QUIC session).
 	Conn   quic.Connection
+	// Target is copied from Manager.Target for convenience.
 	Target string
 
 	// MigrateSeen will be closed once a migrate control message is observed on this session.
@@ -28,10 +39,18 @@ type Session struct {
 	MigrateSeen <-chan struct{}
 }
 
-// Run 负责 QUIC 控制流 + 重连编排。
-// 数据流（ping/echo 或未来 AI 业务流）由 APP 通过 run 回调实现。
-// 约定：当发生迁移时，Wrapper 会记录新目标，并在当前连接断开后切换。
-// 这样可以避免在“迁移尚未完成（B 尚未 restore ready）”时过早中断业务流。
+// Run is the main event loop of the client wrapper.
+//
+// Structure:
+//   1) Dial QUIC to Manager.Target.
+//   2) Open a control stream and start controlLoop in a goroutine.
+//   3) Invoke the application callback, which owns business streams and IO.
+//   4) When the callback returns, close the session and (unless ctx canceled) retry.
+//
+// Transparent migration contract:
+//   - The wrapper DOES NOT switch targets on migrate.
+//   - controlLoop only signals MigrateSeen and sends ACK.
+//   - Any A->B change is handled under the QUIC layer (UDP proxy + server UDP rebind).
 func (m *Manager) Run(ctx context.Context, run func(ctx context.Context, s *Session) error) error {
 	if m.Target == "" {
 		m.Target = "127.0.0.1:5242"
@@ -78,7 +97,7 @@ func (m *Manager) Run(ctx context.Context, run func(ctx context.Context, s *Sess
 		<-ctrlDone
 		tracef("session ctrl loop done target=%s", m.Target)
 
-		// Transparent mode keeps a stable target (typically a UDP proxy). Any address
-		// changes are handled underneath without switching targets here.
+		// In transparent mode we always retry the same Target.
+		// Backend changes are handled by the proxy, not by this loop.
 	}
 }

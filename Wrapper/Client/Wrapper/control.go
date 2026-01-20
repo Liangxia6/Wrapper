@@ -27,6 +27,15 @@ type Message struct {
 	AckID string `json:"ack_id,omitempty"`
 }
 
+// Control protocol: newline-delimited JSON.
+//
+// Why "JSON + \n" in a QUIC stream?
+//   - It's simple for a PoC and debuggable via logs.
+//   - bufio.Scanner can split by lines, which keeps parsing straightforward.
+//   - QUIC provides reliability and ordering within a stream.
+//
+// Note: Scanner has a token size limit, so NewLineReader increases the buffer.
+
 func WriteLine(w io.Writer, msg Message) error {
 	b, err := json.Marshal(msg)
 	if err != nil {
@@ -41,6 +50,8 @@ type LineReader struct{ s *bufio.Scanner }
 func NewLineReader(r io.Reader) *LineReader {
 	s := bufio.NewScanner(r)
 	buf := make([]byte, 0, 64*1024)
+	// Allow up to 1 MiB per control line to avoid Scanner rejecting larger messages.
+	// Our control messages are tiny, but this prevents accidental failures.
 	s.Buffer(buf, 1024*1024)
 	return &LineReader{s: s}
 }
