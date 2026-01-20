@@ -1,0 +1,11 @@
+FROM alpine:3.20
+
+WORKDIR /
+COPY server_bin /server_bin
+
+ENV LISTEN_ADDR=:4242
+ENV MIGRATE_ADDR=127.0.0.1
+ENV MIGRATE_PORT=5243
+ENV QUIET=1
+
+ENTRYPOINT ["/server_bin"]

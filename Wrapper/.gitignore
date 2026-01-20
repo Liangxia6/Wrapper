@@ -1,0 +1,11 @@
+# Build artifacts
+*_bin
+control
+
+# Runtime artifacts
+*.out
+*.pid
+*.log
+
+# Optional: local scratch
+*.tmp
