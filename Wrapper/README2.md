@@ -109,6 +109,12 @@
 	- rebind 时：先创建新 socket，再 swap，再 close 旧 socket。
 	- `ReadFrom/WriteTo`：若读写过程中遇到 `use of closed network connection` 且检测到 generation 已变化，则自动重试。
 
+补充（本 PoC 的连接模型）：
+
+- **逻辑上是一 podman(一个服务实例) ↔ 一个 client 的一一对应关系**。
+- `Server/Control` 可以同时管理多个 podman/实例；每个实例内部都有一套独立的 sWrapper。
+- sWrapper 代码里用 map 维护多个连接是为了通用性，但在本 PoC 的默认跑法里通常只有一个活跃连接。
+
 ### 2.5 Server/Control（外部控制面：编排 podman/criu/nsenter）
 
 目录：`Server/Control`
@@ -158,7 +164,7 @@
 ### 3.2 信号协作（容器外 Control ↔ 容器内 sWrapper）
 
 - `SIGTERM`（发给 A 中 server 进程）：
-	- sWrapper 捕获后向所有已连接客户端广播 `migrate`，并等待 ack（带超时）。
+	- sWrapper 捕获后向该实例对应的客户端发送 `migrate`，并等待 ack（带超时）。
 	- 目的是让“迁移事件”尽可能早地被客户端感知并切换 peer。
 - `SIGUSR2`（发给 B 中 restore 后的 server 进程）：
 	- sWrapper 捕获后执行 UDP rebind（MigratableUDP.Rebind）。
@@ -186,14 +192,28 @@
 	 - 给 A 中 server 进程发 `SIGTERM`。
 5) A 内 sWrapper 收到 `SIGTERM`：
 	 - 生成迁移 id；
-	 - 向所有连接的 client 发送 `migrate(id, newAddr, newPort)`；
+	 - 向该实例对应的 client 发送 `migrate(id, newAddr, newPort)`；
 	 - 等待 client 的 `ack`（带超时）。
 6) client 的 cWrapper 收到 `migrate`：
 	 - 触发 `MigrateSeen`（业务层可进入迁移态/收紧 timeout）；
 	 - 调用 `SwappableUDPConn.SetPeer(newPeer)`，把真实 UDP 对端切到 `127.0.0.1:DST_PORT`；
 	 - 发送 `ack`。
 
-此时：客户端已经知道“接下来对端会变”，并且已经把底层 UDP 真实对端切到新地址，但 QUIC 连接本身仍保持。
+此时（当前实现的语义）：客户端已经知道“接下来对端会变”，并且**立刻**把底层 UDP 真实对端切到新地址；QUIC 连接本身仍保持。
+
+关于“何时切 peer”的讨论（你提出的优化点）：
+
+- 现状（简单）：收到 `migrate` 就 `SetPeer(newPeer)`。
+	- 优点：实现最简单、状态机最少；client 能尽早把后续包送到新地址。
+	- 缺点：在 `migrate` 与真正 `dump/restore` 之间通常还有 pre-dump 窗口，此时 A 仍在服务。
+	  如果立刻切到 B 的地址，可能会**提前**让业务进入“不可达/超时”状态，从而拉长观测到的 downtime。
+
+- 可选优化（更贴近“不中断地预切换”）：
+	- 收到 `migrate` 时不立刻切 peer，而是把新地址记录为“候选 peer”（armed peer）。
+	- 继续用旧 peer 与 A 正常通信；当检测到旧 peer 真的不可用（例如连续 IO 超时/显式断链）时，才切换到候选 peer。
+	- 或者把控制流升级成两阶段：`prepare_migrate`（仅通知新地址）+ `commit_migrate`（真正切换时刻，由 Control 在 restore 完成后触发）。
+
+当前代码实现的是“现状（简单）”，尚未实现“候选 peer/两阶段 commit”的逻辑。
 
 ### 4.3 CRIU 阶段（pre-dump/dump/restore）
 
@@ -290,4 +310,11 @@
 - 客户端本地地址变化：可基于 `SwappableUDPConn.RebindLocal()` 支持本地 UDP 重绑（例如车端换网卡/IP）。
 - 更严格的一致性：把 `ack` 从“已观测迁移”升级为“业务已 quiesce/可安全 dump”的双阶段协议。
 - 更真实的多机迁移：加入镜像传输、registry/DNS/LB 更新与安全控制。
+
+补充说明（当前未做的能力）：
+
+- **Wrapper 目前没有实现“UDP 断联后缓存新消息”的机制**。
+	- client 的业务数据是通过 QUIC stream 直接读写；当网络不可达时会出现 IO 超时。
+	- 现有策略是 `-stay-connected`：发生错误就重开 stream 并继续尝试，让业务尽快观测恢复。
+	- “缓存并重放业务消息”属于更高层的语义（需要消息幂等、顺序、去重与回放策略），不在当前 PoC 的 wrapper 里实现。
 
