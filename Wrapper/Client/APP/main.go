@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Liangxia6/Wrapper/Client/Wrapper"
+	"github.com/Liangxia6/Wrapper/Client/cWrapper"
 )
 
 func main() {
