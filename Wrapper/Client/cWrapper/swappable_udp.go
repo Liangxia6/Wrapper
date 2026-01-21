@@ -88,9 +88,12 @@ func (s *SwappableUDPConn) CutoverToArmedPeer() bool {
 	}
 	// If already cutover to the same peer, treat as no-op.
 	if s.realPeer != nil && udpAddrEqual(s.realPeer, s.armedPeer) {
+		// Still clear armedPeer to avoid repeated commit signals keeping stale state.
+		s.armedPeer = nil
 		return false
 	}
 	s.realPeer = s.armedPeer
+	s.armedPeer = nil
 	return true
 }
 

@@ -12,6 +12,7 @@ type MessageType string
 const (
 	TypeHello   MessageType = "hello"
 	TypeMigrate MessageType = "migrate"
+	TypeCommit  MessageType = "commit"
 	TypeAck     MessageType = "ack"
 )
 

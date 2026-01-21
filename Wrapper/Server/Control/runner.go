@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -16,19 +19,19 @@ type controlConfig struct {
 	workDir string
 	goBin   string
 
-	imgDir     string
-	aName      string
-	bName      string
-	imageName  string
-	srcPort    int
-	dstPort    int
-	criuHost   string
-	verbose    bool
-	noCleanup  bool
-	clientLog  string
-	criuInB    string
-	bInitPID   int
-	aInitPID   int
+	imgDir      string
+	aName       string
+	bName       string
+	imageName   string
+	srcPort     int
+	dstPort     int
+	criuHost    string
+	verbose     bool
+	noCleanup   bool
+	clientLog   string
+	criuInB     string
+	bInitPID    int
+	aInitPID    int
 	restoredPID int
 
 	// Incremental pre-copy (CRIU pre-dump) settings.
@@ -43,6 +46,9 @@ type controlConfig struct {
 	//   - 若非空，final dump 会通过 --prev-images-dir 走增量 dump。
 	predumpRounds  int
 	predumpLastDir string
+
+	// scheme2: out-of-band commit notify address (client listens on UDP).
+	commitAddr string
 }
 
 func mountIfExists(args []string, hostPath, containerPath, mode string) []string {
@@ -79,6 +85,7 @@ func parseCommonFlags(cmd string, args []string) *controlConfig {
 	fs.StringVar(&cfg.imageName, "image", "wrapper-pingserver-criu", "server 镜像名")
 	fs.IntVar(&cfg.srcPort, "src-port", 5242, "A 对外暴露的 host UDP 端口")
 	fs.IntVar(&cfg.dstPort, "dst-port", 5243, "B 对外暴露的 host UDP 端口")
+	fs.StringVar(&cfg.commitAddr, "commit-addr", "127.0.0.1:7360", "方案2：client 侧 commit 通道监听地址(udp)，B restore+rebind 后由 Control 发送 commit")
 	criuHostBin := ""
 	fs.StringVar(&criuHostBin, "criu-host-bin", "", "host 上 criu 可执行文件路径")
 	fs.BoolVar(&cfg.verbose, "verbose", false, "打印更多执行细节")
@@ -102,6 +109,31 @@ func parseCommonFlags(cmd string, args []string) *controlConfig {
 	cfg.criuInB = filepath.Join("/hostbin", filepath.Base(criuHost))
 
 	return cfg
+}
+
+type commitMsg struct {
+	Type string `json:"type"`
+	ID   string `json:"id,omitempty"`
+}
+
+func sendCommit(addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil
+	}
+	c, err := net.Dial("udp", addr)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	msg := commitMsg{Type: "commit", ID: fmt.Sprintf("commit-%d", time.Now().UnixNano())}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	_, err = c.Write(append(b, '\n'))
+	return err
 }
 
 func buildSkipMntArgs(imgDir string) []string {
@@ -333,6 +365,14 @@ func doMigrate(cfg *controlConfig, clientObs *clientObserver) {
 		cfg.restoredPID = rpid
 		if err := sudoKill(cfg.restoredPID, syscall.SIGUSR2); err != nil {
 			return err
+		}
+
+		// 方案2：显式 commit 信号。
+		// 目的：让 client 在 B 已 ready 后立刻 cutover，避免依赖业务 IO deadline 超时触发。
+		// 注意：该信号是“加速路径”，发送失败不应中断迁移。
+		time.Sleep(10 * time.Millisecond)
+		if err := sendCommit(cfg.commitAddr); err != nil {
+			fmt.Fprintf(os.Stderr, "[控制端] 警告：发送 commit 失败 addr=%s err=%v\n", cfg.commitAddr, err)
 		}
 		return nil
 	})

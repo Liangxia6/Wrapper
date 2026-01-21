@@ -213,7 +213,12 @@
 	- 继续用旧 peer 与 A 正常通信；当检测到旧 peer 真的不可用（例如连续 IO 超时/显式断链）时，才切换到候选 peer。
 	- 或者把控制流升级成两阶段：`prepare_migrate`（仅通知新地址）+ `commit_migrate`（真正切换时刻，由 Control 在 restore 完成后触发）。
 
-当前代码实现了“候选 peer（armed peer）+ 业务 IO 失败触发 cutover”的逻辑；尚未实现“两阶段 commit 控制消息”。
+	当前代码同时保留两条路径：
+
+	- 方案1（兜底）：armed peer + 业务 IO 失败触发 cutover。
+	- 方案2（加速）：Control 在 B restore + rebind 后，通过宿主机 UDP 带外发送 `commit`，client 收到后立刻 `CutoverToArmedPeer()`，避免等待业务 deadline。
+		- client 默认监听 `COMMIT_LISTEN_ADDR=127.0.0.1:7360`（可通过环境变量或代码配置覆盖）。
+		- Control 端 `control migrate/run` 支持 `-commit-addr 127.0.0.1:7360`（默认同上）。
 
 ### 4.3 CRIU 阶段（pre-dump/dump/restore）
 
