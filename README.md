@@ -35,6 +35,9 @@ Runtime Wrapper（可选）：提供 freeze/resume/healthz 的本地契约，协
 Client 侧
 Client Wrapper（必需）：向 quic-go 提供稳定的 `net.PacketConn` 视图，并在迁移时切换真实 UDP 对端（peer swap），避免重建 QUIC 会话；同时提供业务层的恢复钩子与观测（downtime）。
 
+<img width="1706" height="948" alt="架构" src="https://github.com/user-attachments/assets/805a3593-d409-4c7a-902e-04c29abd21c4" />
+
+
 ## 可靠运行（本机单次迁移链路）
 
 前置依赖：
