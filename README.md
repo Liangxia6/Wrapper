@@ -5,6 +5,7 @@ Wrapper 的目标是把“迁移编排（CRIU）”与“连接保持（QUIC 连
 本项目聚焦的核心是：
 - server 侧：接收迁移指令并执行 dump/transfer/restore 的控制层能力。
 - client 侧：在网络变更/迁移切换时，由 wrapper 在 UDP 层完成“对端切换”，尽量让 QUIC 不感知地址变化。
+- 更详细内容见README2.md
 
 ## 场景背景（简述）
 
