@@ -1,30 +1,27 @@
 
-# README2：Wrapper 各模块职责 & 迁移全流程（无 Proxy，完全由两端 wrapper 透明化）
+# README2：Wrapper 各模块职责 & 迁移全流程
 
 本文档回答两个问题：
 1) Wrapper 工程里“每一部分要做什么”，以及它们如何协作；
 2) 一次完整的“外部触发迁移（CRIU 注入式迁移）”从开始到恢复的时序流程。
 
-> 关键词：**不重建 QUIC 连接**、**地址变化对 QUIC 尽量透明**、**迁移中断时间以客户端观测为准**。
-
 ---
 
-## 0. 目标与非目标
 
-### 目标
+## 目标
 
 - 迁移发生时：尽量让 quic-go 认为“连接一直存在”，避免重建 QUIC session。
-- 对客户端业务：可容忍短暂停顿，但要把中断控制在较小窗口，并能清晰观测/量化（last echo → first echo after）。
+- 对客户端业务：可容忍短暂停顿，但要把中断控制在较小窗口，并设缓存，在连接恢复后涌给Server。
 - 对服务端恢复：CRIU restore 后必须解决“UDP socket 在新命名空间/端口映射下失效”的问题。
 
 
 ---
 
-## 1. 总体架构（谁做什么）
+## 1. 总体架构
 
 可以把系统拆成三层：
 
-1) **外部编排层（Control / 脚本）**：负责 podman/criu/nsenter 等特权动作。
+1) **外部编排层（Control）**：负责 podman/criu/nsenter 等特权动作。
 2) **容器内服务进程（MEC Server Process）**：包含业务逻辑、QUIC 协议栈，以及 server wrapper。
 3) **客户端进程（Car Client）**：包含业务逻辑、QUIC 协议栈，以及 client wrapper。
 
@@ -45,41 +42,32 @@
 
 目录：`Client/APP`
 
-职责（任务）：
+职责：
 
 - 作为“车端业务”的最小可运行版本：循环发送 Ping，读取 Echo。
-- 通过 per-IO deadline（读写超时）度量中断时间。
-- 监听 wrapper 暴露的 `MigrateSeen` 信号：
-	- 将迁移后阶段的 IO timeout/interval 收紧（更快观测恢复）。
-	- 记录 downtime：最后一次成功 echo 的时间 → 迁移后首次成功 echo 的时间。
-- `-stay-connected` 模式：IO 出错时不结束 session，而是重新开 stream 并继续尝试。
-	- 目的：迁移期间允许短暂 read deadline exceeded，但不主动退出，配合“连接不重建”的目标。
-
-协作点：
-
-- 从环境变量 `TARGET_ADDR` 获取初始服务端地址（host 上的 UDP 暴露端口，例如 `127.0.0.1:5242`）。
-- 从环境变量 `TRANSPARENT` 自动开启 `stay-connected`（脚本已默认设置）。
+- 不处理迁移与 QUIC 细节（全部交给 cWrapper）。
 
 ### 2.2 Client/cWrapper（客户端 wrapper：透明对端切换）
 
 目录：`Client/cWrapper`
 
-职责（任务）：
+职责：
 
 - 建立 QUIC 连接（dial），并创建第一条双向 stream 作为**控制流**。
-- 控制流协议：newline-delimited JSON（`hello` / `migrate` / `ack`）。
+- 控制流协议：JSON（`hello` / `migrate` / `ack`）。
 - 收到 `migrate(new ip:port)` 时：
-	1) 触发 `MigrateSeen`（一次性 close channel）；
-	2) **切换真实 UDP 对端**（peer swap）；
+	1) 触发 `MigrateSeen` 模式；
+	2) **重建 UDP socket 等待连接新Server**；
 	3) 发送 `ack` 回服务端。
+- 在cWrapper中设置缓存机制，驻留服务中断时客户端发送的消息。
 
 关键机制：**SwappableUDPConn（client 侧）**
 
-- 目标：让 quic-go “看到”的 UDP 端点稳定（fake peer 不变），但真实发包对端可切换（real peer 可变）。
-- 行为要点：
+- 目标：让 quic-go “看到”的 UDP 稳定（fake peer 不变），但真实发包对端可切换（real peer 可变）。
+- 向 quic-go 提供 real peer 到fake peer 的转译：
 	- `WriteTo`：忽略 quic-go 传入的 addr，总是发往 `realPeer`。
 	- `ReadFrom`：仅接收来自当前 `realPeer` 的包，并把来源地址伪装为 `fakePeer` 返回给 quic-go。
-- 结果：迁移后即使服务端地址/端口变化，quic-go 层面尽量不触发“对端变化”的路径分支，从而避免重建 session。
+- 结果：迁移后即使服务端地址/端口变化，quic-go 层面尽量不感知底层udp的变化，从而避免重建 session，保留quic状态。
 
 ### 2.3 Server/APP（服务端业务 Demo）
 
@@ -87,7 +75,7 @@
 
 职责（任务）：
 
-- 作为“被迁移的业务进程”的最小可运行版本：对业务 stream 做 echo。
+- 作为“被迁移的业务进程”的最小可运行版本：对客户端的ping做 echo。
 - 不处理迁移与 QUIC 细节（全部交给 sWrapper）。
 
 ### 2.4 Server/sWrapper（服务端 wrapper：可迁移 UDP + 迁移控制流）
@@ -109,11 +97,11 @@
 	- rebind 时：先创建新 socket，再 swap，再 close 旧 socket。
 	- `ReadFrom/WriteTo`：若读写过程中遇到 `use of closed network connection` 且检测到 generation 已变化，则自动重试。
 
-补充（本 PoC 的连接模型）：
+补充：
 
 - **逻辑上是一 podman(一个服务实例) ↔ 一个 client 的一一对应关系**。
 - `Server/Control` 可以同时管理多个 podman/实例；每个实例内部都有一套独立的 sWrapper。
-- sWrapper 代码里用 map 维护多个连接是为了通用性，但在本 PoC 的默认跑法里通常只有一个活跃连接。
+
 
 ### 2.5 Server/Control（外部控制面：编排 podman/criu/nsenter）
 
@@ -123,10 +111,10 @@
 
 - **构建与启动**：编译 server/client，构建镜像，启动 A(源) 与 B(壳) 两个容器，并做端口映射：
 	- host `SRC_PORT` → A 容器 `4242/udp`
-	- host `DST_PORT` → B 容器 `4242/udp`
+	- host `DST_PORT` → B 容器 `4242/udp`（先启动B运行空程序，免去迁移后的启动时间）
 - **触发迁移**：
-	- 给 A 中的 server 进程发 `SIGTERM`，让它广播 migrate 并等待客户端 ack。
-- **CRIU 增量预拷贝（可选）**：多轮 `pre-dump --leave-running --track-mem`，最后 `dump --prev-images-dir`。
+	- 给 A 中的 server 进程发 `SIGTERM`，让它发送 migrate 并等待客户端 ack。
+- **CRIU 增量预拷贝**：多轮 `pre-dump --leave-running --track-mem`，最后 `dump --prev-images-dir`。
 - **注入式恢复**：
 	- kill A
 	- `nsenter` 到 B 的命名空间内执行 `criu restore`
@@ -137,7 +125,7 @@
 - 与 sWrapper 的协作：通过 `SIGTERM`（migrate 广播）与 `SIGUSR2`（rebind）。
 - 与 cWrapper 的协作：通过控制流消息 `migrate`/`ack` 形成“迁移事件的同步点”。
 
-### 2.6 顶层脚本（推荐入口）
+### 2.6 运行脚本
 
 - `run.sh`：
 	- `control up` 启动 A/B；
@@ -174,7 +162,6 @@
 
 ## 4. 一次完整迁移流程（端到端时序）
 
-以下描述的是当前 PoC 的典型时序（`./run.sh` + `./migration.sh` 或 `control run` 模式）。
 
 ### 4.1 稳态阶段（迁移前）
 
@@ -189,36 +176,31 @@
 ### 4.2 迁移触发阶段（让客户端先“看到迁移”）
 
 4) 外部 `control migrate` 触发迁移（关键第一步）：
-	 - 给 A 中 server 进程发 `SIGTERM`。
+	 - Control 给 A 中 server 进程发 `SIGTERM`。
 5) A 内 sWrapper 收到 `SIGTERM`：
 	 - 生成迁移 id；
-	 - 向该实例对应的 client 发送 `migrate(id, newAddr, newPort)`；
+	 - 向该podman对应的 client 发送 `migrate(id, newAddr, newPort)`；
 	 - 等待 client 的 `ack`（带超时）。
 6) client 的 cWrapper 收到 `migrate`：
-	 - 触发 `MigrateSeen`（业务层可进入迁移态/收紧 timeout）；
+	 - 触发 `MigrateSeen`（业务层可进入迁移态）；
 	 - 调用 `SwappableUDPConn.ArmPeer(newPeer)`，把 `127.0.0.1:DST_PORT` 记录为候选对端（此时仍继续用旧对端与 A 通信）；
 	 - 发送 `ack`。
 
-此时（当前实现的语义）：客户端已经知道“接下来对端会变”，但仍用旧对端维持通信；当旧对端真的不可用（例如业务层出现 IO 超时）时，再 cutover 到候选对端。
+此时（当前实现的语义）：客户端cWrapper已经知道“接下来对端会变”，但仍用旧对端维持通信；当旧对端真的不可用（例如业务层出现 IO 超时）时，再 cutover 到候选对端。
 
-关于“何时切 peer”的讨论（你提出的优化点）：
+关于“何时切 peer”的讨论（优化点）：
 
-- 现状（简单）：收到 `migrate` 就 `SetPeer(newPeer)`。
+- 粗暴方法：收到 `migrate` 就 `SetPeer(newPeer)`。
 	- 优点：实现最简单、状态机最少；client 能尽早把后续包送到新地址。
 	- 缺点：在 `migrate` 与真正 `dump/restore` 之间通常还有 pre-dump 窗口，此时 A 仍在服务。
 	  如果立刻切到 B 的地址，可能会**提前**让业务进入“不可达/超时”状态，从而拉长观测到的 downtime。
 
-- 可选优化（更贴近“不中断地预切换”）：
+- 可选优化1：
 	- 收到 `migrate` 时不立刻切 peer，而是把新地址记录为“候选 peer”（armed peer）。
 	- 继续用旧 peer 与 A 正常通信；当检测到旧 peer 真的不可用（例如连续 IO 超时/显式断链）时，才切换到候选 peer。
-	- 或者把控制流升级成两阶段：`prepare_migrate`（仅通知新地址）+ `commit_migrate`（真正切换时刻，由 Control 在 restore 完成后触发）。
+- 可选优化2：
+    - 把控制流升级成两阶段：`prepare_migrate`（仅通知新地址）+ `commit_migrate`（真正切换时刻，由 Control 在 restore 完成后触发）。
 
-	当前代码同时保留两条路径：
-
-	- 方案1（兜底）：armed peer + 业务 IO 失败触发 cutover。
-	- 方案2（加速）：Control 在 B restore + rebind 后，通过宿主机 UDP 带外发送 `commit`，client 收到后立刻 `CutoverToArmedPeer()`，避免等待业务 deadline。
-		- client 默认监听 `COMMIT_LISTEN_ADDR=127.0.0.1:7360`（可通过环境变量或代码配置覆盖）。
-		- Control 端 `control migrate/run` 支持 `-commit-addr 127.0.0.1:7360`（默认同上）。
 
 ### 4.3 CRIU 阶段（pre-dump/dump/restore）
 
@@ -244,7 +226,7 @@
 
 ---
 
-## 5. 深度价值：它如何提升体验/性能（直观解释）
+## 5. 创新点
 
 对比两种迁移方式：
 
@@ -254,15 +236,14 @@
 2) 客户端重新 dial/握手（至少 1-RTT；即使 0-RTT 也会有恢复成本）。
 3) 连接重建会触发拥塞控制重新慢启动（CWND 变小），吞吐/时延都抖。
 
-### 5.2 有 wrapper 内部透明（本项目主线）
+### 5.2 有 wrapper 内部透明（本项目方案）
 
 1) 迁移期间：业务可能短暂停顿，但 QUIC session 尽量不被关闭。
 2) client 侧仅切换底层 UDP 对端（peer swap），server 侧仅 rebind 本地 UDP socket。
 3) QUIC 层更可能保持现有状态（包括拥塞窗口/路径状态），恢复后可更快回到稳定发送。
 
-> 当前 PoC 的“收益形式”主要体现在：减少握手/重建成本与慢启动惩罚，让恢复更像“短暂停顿后继续”。
 
-### 5.3 QUIC/CID 视角：为什么“换 IP 仍像同一连接”（直觉版）
+### 5.3 QUIC/CID 视角：为什么“换 IP 仍像同一连接”
 
 你可以把 QUIC 的“连接身份”理解成：**Connection ID（CID）** + 会话密钥 + 状态机。
 
@@ -286,11 +267,9 @@
 	- client：SwappableUDPConn 把 real peer 从 A 切到 B（接口对 quic-go 保持稳定）。
 - QUIC 的反应：quic-go 继续调用同一个 `PacketConn.ReadFrom/WriteTo`，并认为调用成功；连接状态（含 CID）仍在，因此尽量不会走“重建连接”的路径。
 
-> 说明：标准 QUIC 还可能涉及路径验证/反放大等机制；本 PoC 的目标是验证“CID+内存态保留 + wrapper 提供稳定 socket 视图”在迁移场景下能实现尽量透明的恢复。
-
 ---
 
-## 6. 如何运行（推荐）
+## 6. 运行
 
 前置依赖：Go 1.21、podman、criu、nsenter、sudo 可用。
 
@@ -310,16 +289,7 @@
 
 ---
 
-## 7. 未来扩展点（可选）
+## 7. 未来扩展
 
-- 客户端本地地址变化：可基于 `SwappableUDPConn.RebindLocal()` 支持本地 UDP 重绑（例如车端换网卡/IP）。
-- 更严格的一致性：把 `ack` 从“已观测迁移”升级为“业务已 quiesce/可安全 dump”的双阶段协议。
-- 更真实的多机迁移：加入镜像传输、registry/DNS/LB 更新与安全控制。
 
-补充说明（当前未做的能力）：
-
-- **Wrapper 目前没有实现“UDP 断联后缓存新消息”的机制**。
-	- client 的业务数据是通过 QUIC stream 直接读写；当网络不可达时会出现 IO 超时。
-	- 现有策略是 `-stay-connected`：发生错误就重开 stream 并继续尝试，让业务尽快观测恢复。
-	- “缓存并重放业务消息”属于更高层的语义（需要消息幂等、顺序、去重与回放策略），不在当前 PoC 的 wrapper 里实现。
 
